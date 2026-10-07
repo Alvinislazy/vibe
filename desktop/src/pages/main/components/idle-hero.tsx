@@ -319,7 +319,12 @@ function LinkPanel() {
 }
 
 export default function IdleHero() {
-	const { dragging, browse, collectingFolder, panel, setPanel, link, recording } = useSession()
+	const { dragging, browse, collectingFolder, panel, setPanel, link, recording, queue } = useSession()
+
+	// "New transcription" mid-run keeps the queue alive in the background and drops the user onto
+	// this idle hero; make that work visible instead of silent until they re-open the session.
+	const activeCount = queue.jobs.filter((job) => job.status === 'running' || job.status === 'queued').length
+	const showPendingBanner = queue.pendingInput && activeCount > 0
 
 	function selectPanel(next: IdlePanel) {
 		if (recording.isRecording || next === panel) return
@@ -331,6 +336,15 @@ export default function IdleHero() {
 		// One optical column: pills, active source and quiet row all span max-w-xl with a 20px rhythm.
 		// The extra bottom padding lifts the column above the true centre — optically centred reads better.
 		<div className="mx-auto flex w-full max-w-xl flex-1 flex-col justify-center gap-5 px-6 pt-4 pb-[30vh]">
+			{showPendingBanner && (
+				<div className="mx-4 flex items-center gap-3 rounded-xl border border-border bg-muted/50 px-3 py-2 text-[12px]">
+					<span className="shrink-0 font-medium text-foreground">{m.transcriptionsRunning({ count: String(activeCount) })}</span>
+					<span className="min-w-0 flex-1 truncate text-muted-foreground">{m.filesQueuedAfterCurrent()}</span>
+					<Button size="sm" variant="secondary" onClick={() => queue.closeInput()} className="shrink-0 rounded-full">
+						{m.viewProgress()}
+					</Button>
+				</div>
+			)}
 			{/* Joined source switcher: one control, three keys; the active source replaces the drop area. */}
 			<div className="mx-auto inline-flex items-center gap-1 rounded-full border border-border bg-muted/60 p-1">
 				<Segment active={panel === 'none'} label={m.fromFile()} onClick={() => selectPanel('none')}>

@@ -192,3 +192,38 @@ pub async fn download_audio(app_handle: AppHandle, url: String, out_path: String
     }
     Ok(())
 }
+
+#[tauri::command]
+pub async fn get_media_title(app_handle: AppHandle, url: String) -> Result<String> {
+    let name = get_binary_name();
+    let path = app_handle.path().app_local_data_dir().context("Can't get data directory")?;
+    let path = path.join(name);
+
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        let meta = std::fs::metadata(path.clone())?;
+        let mut perm = meta.permissions();
+        perm.set_mode(0o755);
+        std::fs::set_permissions(path.clone(), perm)?;
+    }
+
+    let mut cmd = std::process::Command::new(path);
+    let cmd = cmd
+        .args(["--print", "title", "--no-playlist", "--skip-download", &url])
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped());
+
+    #[cfg(windows)]
+    let cmd = cmd.creation_flags(CREATE_NO_WINDOW);
+
+    let output = cmd.output()?;
+    if !output.status.success() {
+        bail!("Failed to fetch title");
+    }
+    let title = String::from_utf8_lossy(&output.stdout).trim().to_string();
+    if title.is_empty() {
+        bail!("Empty title");
+    }
+    Ok(title)
+}

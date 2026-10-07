@@ -57,6 +57,21 @@ export async function downloadAudio(url: string) {
 	return outPath
 }
 
+/** Fetch the title of a media URL via yt-dlp. Falls back to the hostname, then the URL. */
+export async function getMediaTitle(url: string): Promise<string> {
+	try {
+		const title = await invoke<string>('get_media_title', { url })
+		if (title.trim()) return title.trim()
+	} catch {
+		/* network or extractor failure — name from the URL instead */
+	}
+	try {
+		return new URL(url).hostname.replace(/^www\./, '')
+	} catch {
+		return url
+	}
+}
+
 /** Every link in the box, one per line or several separated by spaces, without repeats. */
 export function parseMediaLinks(input: string): string[] {
 	return [...new Set(input.split(/\s+/).filter(Boolean))]

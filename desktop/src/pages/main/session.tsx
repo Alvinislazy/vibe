@@ -10,8 +10,9 @@ import * as config from '~/lib/config'
 import { pathToNamedPath } from '~/lib/fs'
 import { cleanupPartialDownloads, listInstalledModels, type InstalledModel } from '~/lib/model'
 import { autoProjectName } from '~/lib/project-name'
+import { createGroup } from '~/lib/transcript-groups'
 import { notifyTranscriptsChanged, saveTranscript, TRANSCRIPT_VERSION, type TranscriptRecord } from '~/lib/transcripts-store'
-import type { NamedPath, ProjectSource } from '~/lib/types'
+import type { ProjectSource } from '~/lib/types'
 import { useConfirmExit } from '~/lib/use-confirm-exit'
 import { hotkeyRecordingActive } from '~/providers/hotkey'
 import { useRecordingShortcut } from '~/providers/recording-shortcut'
@@ -21,7 +22,7 @@ import { useAudioDownload } from '~/pages/home/hooks/use-audio-download'
 import { useRecording } from '~/pages/home/hooks/use-recording'
 import { useDropTarget } from './hooks/use-drop-target'
 import { useSummaries, type Summaries } from './hooks/use-summaries'
-import { useTranscribeQueue, type TranscribeQueue } from './hooks/use-transcribe-queue'
+import { useTranscribeQueue, type EnqueueItem, type TranscribeQueue } from './hooks/use-transcribe-queue'
 
 export type SessionMode = 'idle' | 'working' | 'done'
 export type IdlePanel = 'none' | 'record' | 'link'
@@ -81,13 +82,15 @@ export function SessionProvider({ children }: { children: ReactNode }) {
 	}, [preference, queue.hydrate, queue.transcribeJob])
 
 	const enqueuePaths = useCallback(
-		async (paths: string[], source: ProjectSource) => {
-			const files: NamedPath[] = []
-			for (const item of paths) {
+		async (paths: string[], source: ProjectSource, titles?: string[], groupPath?: string) => {
+			const files: EnqueueItem[] = []
+			for (const [index, item] of paths.entries()) {
 				// A picked or dropped path may be a folder — detect and expand to its media files.
 				const isMediaFile = mediaExtensions.some((ext) => item.toLowerCase().endsWith(`.${ext.toLowerCase()}`))
 				if (isMediaFile) {
-					files.push({ ...(await pathToNamedPath(item)), source })
+					const named = await pathToNamedPath(item)
+					if (titles?.[index]) named.name = titles[index]
+					files.push({ ...named, source, groupPath })
 					continue
 				}
 				setCollectingFolder(true)
@@ -97,16 +100,25 @@ export function SessionProvider({ children }: { children: ReactNode }) {
 						patterns: mediaExtensions,
 						recursive: preference.advancedTranscribeOptions.includeSubFolders,
 					})
-					for (const path of expanded) files.push({ ...(await pathToNamedPath(path)), source })
+					let folderGroup = groupPath
+					if (!folderGroup && expanded.length >= 2) {
+						const folder = await pathToNamedPath(item)
+						try {
+							folderGroup = await createGroup(folder.name, preference.projectsPath)
+						} catch (error) {
+							console.warn('failed to create folder group:', error)
+						}
+					}
+					for (const path of expanded) files.push({ ...(await pathToNamedPath(path)), source, groupPath: folderGroup })
 				} catch {
-					files.push({ ...(await pathToNamedPath(item)), source })
+					files.push({ ...(await pathToNamedPath(item)), source, groupPath })
 				} finally {
 					setCollectingFolder(false)
 				}
 			}
 			if (files.length) enqueueRef.current(files)
 		},
-		[preference.advancedTranscribeOptions.includeSubFolders],
+		[preference.advancedTranscribeOptions.includeSubFolders, preference.projectsPath],
 	)
 
 	const dragging = useDropTarget(
@@ -121,8 +133,8 @@ export function SessionProvider({ children }: { children: ReactNode }) {
 
 	/** Downloaded files remain explicitly URL-sourced after they land on disk. */
 	const transcribeDownloads = useCallback(
-		async (paths: string[]) => {
-			await enqueuePaths(paths, 'url')
+		async (paths: string[], titles?: string[], groupPath?: string) => {
+			await enqueuePaths(paths, 'url', titles, groupPath)
 		},
 		[enqueuePaths],
 	)
@@ -238,7 +250,8 @@ export function SessionProvider({ children }: { children: ReactNode }) {
 	}, [enqueuePaths])
 
 	const startNew = useCallback(() => {
-		queue.reset()
+		if (queue.running) queue.openInput()
+		else queue.reset()
 		setPanel('none')
 	}, [queue])
 
@@ -309,7 +322,13 @@ export function SessionProvider({ children }: { children: ReactNode }) {
 	const hasUnsavedResults = queue.jobs.some((job) => job.status === 'done' && !job.hydrated && !job.savedPath)
 	useConfirmExit(preference.closeToTray, queue.running || hasUnsavedResults)
 
-	const mode: SessionMode = queue.jobs.length === 0 ? 'idle' : queue.running || queue.jobs.some((job) => job.status === 'queued') ? 'working' : 'done'
+	const mode: SessionMode = queue.pendingInput
+		? 'idle'
+		: queue.jobs.length === 0
+			? 'idle'
+			: queue.running || queue.jobs.some((job) => job.status === 'queued')
+				? 'working'
+				: 'done'
 
 	const value = useMemo<Session>(
 		() => ({

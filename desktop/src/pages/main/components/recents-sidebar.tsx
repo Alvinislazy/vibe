@@ -1,23 +1,15 @@
 import { useVirtualizer } from '@tanstack/react-virtual'
 import { invoke } from '@tauri-apps/api/core'
-import * as pathApi from '@tauri-apps/api/path'
 import * as dialog from '@tauri-apps/plugin-dialog'
-import * as fs from '@tauri-apps/plugin-fs'
-import { Download, MoreHorizontal, Plus, Search, Settings, Smartphone } from 'lucide-react'
+import { Download, ChevronDown, ChevronRight, Folder, MoreHorizontal, Plus, Search, Settings, Smartphone } from 'lucide-react'
 import { useCallback, useContext, useEffect, useMemo, useRef, useState } from 'react'
 import { m } from '~/paraglide/messages.js'
 import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuSeparator, DropdownMenuTrigger } from '~/components/ui/dropdown-menu'
 import { Tooltip, TooltipContent, TooltipTrigger } from '~/components/ui/tooltip'
 import { cn } from '~/lib/style'
-import {
-	deleteTranscript,
-	listTranscripts,
-	readTranscript,
-	renameTranscript,
-	resolveProjectAudio,
-	TRANSCRIPTS_CHANGED_EVENT,
-	type TranscriptEntry,
-} from '~/lib/transcripts-store'
+import { deleteGroup, listSidebarItems, renameGroup, type SidebarItem, type TranscriptGroup } from '~/lib/transcript-groups'
+import { readTranscript, resolveProjectAudio, TRANSCRIPTS_CHANGED_EVENT, type TranscriptEntry } from '~/lib/transcripts-store'
+import { RecentRow } from './recent-row'
 
 import { openSettingsSection } from '~/lib/app'
 import { TOGGLE_SIDEBAR_EVENT } from '~/components/layout'
@@ -25,7 +17,6 @@ import { getTextDirection } from '~/paraglide/runtime.js'
 import { UpdaterContext } from '~/providers/updater'
 import { Spinner } from '~/components/ui/spinner'
 import { useSession } from '../session'
-import RetranscribeDialog from './retranscribe-dialog'
 import type { Job } from '../hooks/use-transcribe-queue'
 
 /** Resize bounds: never narrower than the rows need, never much wider than the default. */
@@ -41,6 +32,52 @@ const CLOSE_EDGE = 56
 /** A recent row is two lines of text plus its padding; the virtualizer measures the real height after mount. */
 const ROW_HEIGHT = 52
 const WIDTH_STORAGE_KEY = 'vibe_sidebar_width'
+const COLLAPSED_GROUPS_KEY = 'vibe_sidebar_group_collapsed'
+
+function readCollapsedGroups(): Record<string, boolean> {
+	try {
+		const raw = window.localStorage.getItem(COLLAPSED_GROUPS_KEY)
+		if (!raw) return {}
+		const parsed = JSON.parse(raw) as Record<string, boolean>
+		return parsed && typeof parsed === 'object' ? parsed : {}
+	} catch {
+		return {}
+	}
+}
+
+function writeCollapsedGroups(value: Record<string, boolean>) {
+	try {
+		window.localStorage.setItem(COLLAPSED_GROUPS_KEY, JSON.stringify(value))
+	} catch {
+		/* private mode — collapse still holds for this session */
+	}
+}
+
+type FlatRow =
+	| { key: string; kind: 'single'; entry: TranscriptEntry }
+	| { key: string; kind: 'group'; group: TranscriptGroup; collapsed: boolean }
+	| { key: string; kind: 'child'; entry: TranscriptEntry }
+
+function flattenSidebar(items: SidebarItem[], query: string, collapsed: Record<string, boolean>): FlatRow[] {
+	const needle = query.trim().toLowerCase()
+	const rows: FlatRow[] = []
+	for (const item of items) {
+		if (item.type === 'single') {
+			if (needle && !item.entry.name.toLowerCase().includes(needle)) continue
+			rows.push({ key: item.entry.path, kind: 'single', entry: item.entry })
+			continue
+		}
+		const { group } = item
+		const groupMatches = !needle || group.name.toLowerCase().includes(needle)
+		const children = needle && !groupMatches ? group.items.filter((child) => child.name.toLowerCase().includes(needle)) : group.items
+		if (needle && !groupMatches && children.length === 0) continue
+		const isCollapsed = Boolean(collapsed[group.path]) && !needle
+		rows.push({ key: group.path, kind: 'group', group, collapsed: isCollapsed })
+		if (isCollapsed) continue
+		for (const child of children) rows.push({ key: child.path, kind: 'child', entry: child })
+	}
+	return rows
+}
 
 function clampWidth(width: number) {
 	return Math.min(MAX_WIDTH, Math.max(MIN_WIDTH, width))
@@ -126,170 +163,6 @@ function useResizableWidth() {
 	return { width, dragging, handleProps: { onPointerDown, onPointerMove, onPointerUp: endDrag, onPointerCancel: endDrag, onDoubleClick } }
 }
 
-/** "just now" / "14m ago" / "3h ago" / "2d ago" / "Aug 19" / "Aug 19, 2024" */
-function relativeDate(date: Date) {
-	const time = date.getTime()
-	if (!time) return ''
-	const minutes = Math.floor((Date.now() - time) / 60_000)
-	if (minutes < 1) return m.justNow()
-	if (minutes < 60) return m.minutesAgo({ minutes: String(minutes) })
-	const hours = Math.floor(minutes / 60)
-	if (hours < 24) return m.hoursAgo({ hours: String(hours) })
-	const days = Math.floor(hours / 24)
-	if (days < 7) return m.daysAgo({ days: String(days) })
-	const sameYear = date.getFullYear() === new Date().getFullYear()
-	return date.toLocaleDateString(undefined, { month: 'short', day: 'numeric', ...(sameYear ? {} : { year: 'numeric' }) })
-}
-
-interface RowMenuState {
-	/** media to re-transcribe: the original file, else the project folder's copy; null when neither */
-	sourcePath: string | null
-	sourceExists: boolean
-}
-
-function RecentRow({
-	entry,
-	active,
-	disabled,
-	onOpen,
-	onDeleted,
-	onRenamed,
-}: {
-	entry: TranscriptEntry
-	active: boolean
-	disabled: boolean
-	onOpen: () => void
-	onDeleted: () => void
-	onRenamed: () => void
-}) {
-	const { queue } = useSession()
-	const [menu, setMenu] = useState<RowMenuState>({ sourcePath: null, sourceExists: false })
-	const [renaming, setRenaming] = useState(false)
-	const [retranscribing, setRetranscribing] = useState(false)
-	const [draftName, setDraftName] = useState(entry.name)
-
-	// The list is built from names only, so the media is located lazily — the first time the row's
-	// menu opens — to decide whether "Re-transcribe" can do anything. The original file wins; the
-	// project folder's copy keeps re-transcribing possible once the original is gone.
-	const loadSource = useCallback(async () => {
-		const record = await readTranscript(entry.path)
-		if (!record) {
-			setMenu({ sourcePath: null, sourceExists: false })
-			return
-		}
-		let sourceExists = false
-		try {
-			sourceExists = !!record.sourcePath && (await fs.exists(record.sourcePath))
-		} catch (error) {
-			console.warn('failed to check source file:', error)
-		}
-		if (sourceExists) {
-			setMenu({ sourcePath: record.sourcePath, sourceExists: true })
-			return
-		}
-		const copy = await resolveProjectAudio(entry.path, record)
-		setMenu({ sourcePath: copy ?? (record.sourcePath || null), sourceExists: !!copy })
-	}, [entry.path])
-
-	async function reveal() {
-		try {
-			await invoke('open_path', { path: await pathApi.dirname(entry.path) })
-		} catch (error) {
-			console.warn('failed to reveal transcript:', error)
-		}
-	}
-
-	async function remove() {
-		const confirmed = await dialog.ask(m.deleteTranscriptBody({ name: entry.name }), {
-			title: m.deleteTranscript(),
-			kind: 'warning',
-		})
-		if (!confirmed) return
-		await deleteTranscript(entry.path)
-		onDeleted()
-	}
-
-	function retranscribe() {
-		if (!menu.sourcePath || !menu.sourceExists) return
-		queue.enqueue([{ name: entry.name, path: menu.sourcePath, projectName: entry.name }])
-	}
-
-	async function commitRename() {
-		const next = draftName.trim()
-		setRenaming(false)
-		if (!next || next === entry.name) return
-		if (await renameTranscript(entry.path, next)) onRenamed()
-	}
-
-	if (renaming) {
-		return (
-			<div className="flex items-center rounded-xl bg-muted px-2 py-1.5">
-				<input
-					autoFocus
-					value={draftName}
-					onChange={(event) => setDraftName(event.target.value)}
-					onKeyDown={(event) => {
-						if (event.key === 'Enter') void commitRename()
-						if (event.key === 'Escape') setRenaming(false)
-					}}
-					onBlur={() => void commitRename()}
-					aria-label={m.transcriptName()}
-					className="h-7 w-full min-w-0 rounded-lg border border-ring/40 bg-background px-2 text-[13px] text-foreground outline-none"
-				/>
-			</div>
-		)
-	}
-
-	return (
-		<div className={cn('group relative flex items-center rounded-xl transition-colors duration-150', active ? 'bg-muted' : 'hover:bg-muted/60')}>
-			<RetranscribeDialog open={retranscribing} onOpenChange={setRetranscribing} name={entry.name} onConfirm={retranscribe} />
-			<button
-				type="button"
-				onClick={onOpen}
-				disabled={disabled}
-				title={entry.name}
-				className="min-w-0 flex-1 cursor-pointer px-3 py-2 text-start disabled:cursor-default disabled:opacity-50">
-				<p className="truncate text-[13px] font-medium text-foreground">{entry.name}</p>
-				<p className="mt-0.5 truncate text-[11px] text-muted-foreground">{relativeDate(entry.createdAt)}</p>
-			</button>
-
-			<DropdownMenu
-				onOpenChange={(open) => {
-					if (open) void loadSource()
-				}}>
-				<DropdownMenuTrigger asChild>
-					<button
-						type="button"
-						aria-label={m.transcriptActions()}
-						className={cn(
-							'me-1.5 flex h-7 w-7 shrink-0 cursor-pointer items-center justify-center rounded-full text-muted-foreground transition-opacity duration-150',
-							'opacity-0 group-hover:opacity-100 focus-visible:opacity-100 data-[state=open]:opacity-100 hover:text-foreground',
-						)}>
-						<MoreHorizontal className="h-4 w-4" />
-					</button>
-				</DropdownMenuTrigger>
-				<DropdownMenuContent align="end" className="w-48">
-					<DropdownMenuItem disabled={disabled || !menu.sourceExists} onSelect={() => setRetranscribing(true)}>
-						{m.reTranscribe()}
-					</DropdownMenuItem>
-					<DropdownMenuItem
-						onSelect={() => {
-							setDraftName(entry.name)
-							setRenaming(true)
-						}}>
-						{m.rename()}
-					</DropdownMenuItem>
-					<DropdownMenuItem onSelect={() => void reveal()}>{m.showInFolder()}</DropdownMenuItem>
-					<DropdownMenuSeparator />
-					<DropdownMenuItem className="text-destructive focus:text-destructive" onSelect={() => void remove()}>
-						{m.delete()}
-					</DropdownMenuItem>
-				</DropdownMenuContent>
-			</DropdownMenu>
-		</div>
-	)
-}
-
 /** One job from the running session — it shows up the moment it is queued, not when it is saved. */
 function SessionRow({ job, active, onOpen }: { job: Job; active: boolean; onOpen: () => void }) {
 	const status =
@@ -318,31 +191,125 @@ function SessionRow({ job, active, onOpen }: { job: Job; active: boolean; onOpen
 	)
 }
 
+/** A folder group header: a toggle chevron, the folder name, its child count, and a menu. */
+function GroupRow({ group, collapsed, onToggle, onChanged }: { group: TranscriptGroup; collapsed: boolean; onToggle: () => void; onChanged: () => void }) {
+	const [renaming, setRenaming] = useState(false)
+	const [draftName, setDraftName] = useState(group.name)
+	const count = group.items.length
+
+	async function reveal() {
+		try {
+			await invoke('open_path', { path: group.path })
+		} catch (error) {
+			console.warn('failed to reveal group:', error)
+		}
+	}
+
+	async function remove() {
+		const confirmed = await dialog.ask(m.deleteGroupBody({ name: group.name }), {
+			title: m.deleteGroup(),
+			kind: 'warning',
+		})
+		if (!confirmed) return
+		await deleteGroup(group.path)
+		onChanged()
+	}
+
+	function commitRename() {
+		const next = draftName.trim()
+		setRenaming(false)
+		if (!next || next === group.name) return
+		void renameGroup(group.path, next).then((ok) => ok && onChanged())
+	}
+
+	if (renaming) {
+		return (
+			<div className="flex items-center rounded-xl bg-muted px-2 py-1.5">
+				<input
+					autoFocus
+					value={draftName}
+					onChange={(event) => setDraftName(event.target.value)}
+					onKeyDown={(event) => {
+						if (event.key === 'Enter') commitRename()
+						if (event.key === 'Escape') setRenaming(false)
+					}}
+					onBlur={commitRename}
+					aria-label={m.groupName()}
+					className="h-7 w-full min-w-0 rounded-lg border border-ring/40 bg-background px-2 text-[13px] text-foreground outline-none"
+				/>
+			</div>
+		)
+	}
+
+	return (
+		<div className="group relative flex items-center rounded-xl transition-colors duration-150 hover:bg-muted/60">
+			<button
+				type="button"
+				aria-label={collapsed ? m.expandGroup() : m.collapseGroup()}
+				onClick={onToggle}
+				className="me-0.5 flex h-7 w-7 shrink-0 cursor-pointer items-center justify-center rounded-full text-muted-foreground transition-colors hover:text-foreground">
+				{collapsed ? <ChevronRight className="h-4 w-4" strokeWidth={1.75} /> : <ChevronDown className="h-4 w-4" strokeWidth={1.75} />}
+			</button>
+			<span className="flex min-w-0 flex-1 cursor-default items-center gap-2 py-1">
+				<Folder className="h-4 w-4 shrink-0 text-muted-foreground" strokeWidth={1.75} />
+				<span className="truncate text-[13px] font-medium text-foreground">{group.name}</span>
+				<span className="shrink-0 text-[11px] tabular-nums text-muted-foreground">{count}</span>
+			</span>
+			<DropdownMenu>
+				<DropdownMenuTrigger asChild>
+					<button
+						type="button"
+						aria-label={m.groupActions()}
+						className="me-1.5 flex h-7 w-7 shrink-0 cursor-pointer items-center justify-center rounded-full text-muted-foreground transition-opacity duration-150 opacity-0 group-hover:opacity-100 focus-visible:opacity-100 data-[state=open]:opacity-100 hover:text-foreground">
+						<MoreHorizontal className="h-4 w-4" />
+					</button>
+				</DropdownMenuTrigger>
+				<DropdownMenuContent align="end" className="w-48">
+					<DropdownMenuItem
+						onSelect={() => {
+							setDraftName(group.name)
+							setRenaming(true)
+						}}>
+						{m.rename()}
+					</DropdownMenuItem>
+					<DropdownMenuItem onSelect={() => void reveal()}>{m.showInFolder()}</DropdownMenuItem>
+					<DropdownMenuSeparator />
+					<DropdownMenuItem className="text-destructive focus:text-destructive" onSelect={() => void remove()}>
+						{m.deleteGroup()}
+					</DropdownMenuItem>
+				</DropdownMenuContent>
+			</DropdownMenu>
+		</div>
+	)
+}
+
 /**
  * The recents list, windowed: only the rows near the viewport are mounted, so a folder holding
  * hundreds of projects costs the same to render as one holding ten.
  */
 function RecentsList({
-	entries,
+	rows,
 	activePath,
 	activeName,
 	disabled,
 	onOpen,
+	onToggleGroup,
 	onChanged,
 }: {
-	entries: TranscriptEntry[]
+	rows: FlatRow[]
 	activePath: string | null
 	activeName: string | null
 	disabled: boolean
 	onOpen: (entry: TranscriptEntry) => void
+	onToggleGroup: (path: string) => void
 	onChanged: () => void
 }) {
 	const scrollRef = useRef<HTMLDivElement>(null)
 	const virtualizer = useVirtualizer({
-		count: entries.length,
+		count: rows.length,
 		getScrollElement: () => scrollRef.current,
 		estimateSize: () => ROW_HEIGHT,
-		getItemKey: (index) => entries[index]?.path ?? index,
+		getItemKey: (index) => rows[index]?.key ?? index,
 		// A row grows when its name wraps, and shrinks while it is being renamed.
 		measureElement: (element) => element.getBoundingClientRect().height,
 		overscan: 8,
@@ -352,8 +319,21 @@ function RecentsList({
 		<div ref={scrollRef} className="min-h-0 flex-1 overflow-y-auto px-2 pb-3">
 			<div className="relative w-full" style={{ height: virtualizer.getTotalSize() }}>
 				{virtualizer.getVirtualItems().map((item) => {
-					const entry = entries[item.index]
-					if (!entry) return null
+					const row = rows[item.index]
+					if (!row) return null
+					if (row.kind === 'group') {
+						return (
+							<div
+								key={item.key}
+								ref={virtualizer.measureElement}
+								data-index={item.index}
+								className="absolute inset-x-0 top-0"
+								style={{ transform: `translateY(${item.start}px)` }}>
+								<GroupRow group={row.group} collapsed={row.collapsed} onToggle={() => onToggleGroup(row.group.path)} onChanged={onChanged} />
+							</div>
+						)
+					}
+					const entry = row.entry
 					const active = entry.path === activePath
 					return (
 						<div
@@ -366,6 +346,7 @@ function RecentsList({
 								entry={active && activeName ? { ...entry, name: activeName } : entry}
 								active={active}
 								disabled={disabled}
+								indent={row.kind === 'child'}
 								onOpen={() => onOpen(entry)}
 								onDeleted={onChanged}
 								onRenamed={onChanged}
@@ -382,11 +363,12 @@ export default function RecentsSidebar() {
 	const { queue, startNew, preference } = useSession()
 	const { updateApp, availableUpdate } = useContext(UpdaterContext)
 	const { width, dragging, handleProps } = useResizableWidth()
-	const [entries, setEntries] = useState<TranscriptEntry[]>([])
+	const [items, setItems] = useState<SidebarItem[]>([])
+	const [collapsed, setCollapsed] = useState<Record<string, boolean>>(() => readCollapsedGroups())
 	const [query, setQuery] = useState('')
 
 	const refresh = useCallback(() => {
-		void listTranscripts(preference.projectsPath).then(setEntries)
+		void listSidebarItems(preference.projectsPath).then(setItems)
 	}, [preference.projectsPath])
 
 	useEffect(() => {
@@ -400,11 +382,17 @@ export default function RecentsSidebar() {
 	// finished with saving switched off) — without them a new transcription looks like it went nowhere.
 	const liveJobs = useMemo(() => queue.jobs.filter((job) => !job.savedPath && !job.hydrated), [queue.jobs])
 
-	const filtered = useMemo(() => {
-		const needle = query.trim().toLowerCase()
-		if (!needle) return entries
-		return entries.filter((entry) => entry.name.toLowerCase().includes(needle))
-	}, [entries, query])
+	const rows = useMemo(() => flattenSidebar(items, query, collapsed), [items, query, collapsed])
+
+	function toggleGroup(path: string) {
+		setCollapsed((previous) => {
+			const next = { ...previous }
+			if (next[path]) delete next[path]
+			else next[path] = true
+			writeCollapsedGroups(next)
+			return next
+		})
+	}
 
 	const activePath = queue.selectedJob?.savedPath ?? null
 
@@ -436,7 +424,7 @@ export default function RecentsSidebar() {
 				</button>
 			</div>
 
-			{entries.length > 8 && (
+			{items.length > 8 && (
 				<div className="relative mt-2 px-3">
 					<Search className="pointer-events-none absolute start-6 top-1/2 h-3.5 w-3.5 -translate-y-1/2 text-muted-foreground" />
 					<input
@@ -465,18 +453,19 @@ export default function RecentsSidebar() {
 
 			<p className="px-4 pt-4 pb-2 text-[11px] font-medium tracking-[0.08em] text-muted-foreground uppercase">{m.recents()}</p>
 
-			{filtered.length === 0 ? (
+			{rows.length === 0 ? (
 				<div className="min-h-0 flex-1 overflow-y-auto px-2 pb-3">
-					<p className="px-3 py-2 text-[13px] text-muted-foreground">{entries.length === 0 ? m.noRecentTranscripts() : m.noMatches()}</p>
+					<p className="px-3 py-2 text-[13px] text-muted-foreground">{items.length === 0 ? m.noRecentTranscripts() : m.noMatches()}</p>
 				</div>
 			) : (
 				<RecentsList
-					entries={filtered}
+					rows={rows}
 					activePath={activePath}
 					activeName={queue.selectedJob?.name ?? null}
 					// Loading another transcript mid-run would fight the queue for the view.
 					disabled={queue.running}
 					onOpen={(entry) => void open(entry)}
+					onToggleGroup={toggleGroup}
 					onChanged={refresh}
 				/>
 			)}

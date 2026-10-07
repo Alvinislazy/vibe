@@ -41,6 +41,8 @@ export type JobStatus = 'queued' | 'running' | 'done' | 'error' | 'cancelled'
 export interface EnqueueItem extends NamedPath {
 	/** Title of the project this input came from; used verbatim, without a source prefix. */
 	projectName?: string
+	/** When set, the transcript is saved inside this folder group. */
+	groupPath?: string | null
 }
 
 export interface Job {
@@ -49,6 +51,8 @@ export interface Job {
 	path: string
 	/** Origin of this newly created project. */
 	source?: ProjectSource
+	/** When set, this job belongs to a folder group. */
+	groupPath?: string | null
 	status: JobStatus
 	/** 0..100, only meaningful while running */
 	progress: number
@@ -127,6 +131,12 @@ export interface TranscribeQueue {
 	cancelCurrent: () => void
 	cancelAll: () => void
 	reset: () => void
+	/** Idle input overlay while jobs keep running in the background. */
+	pendingInput: boolean
+	/** Show the idle picker without cancelling the queue. */
+	openInput: () => void
+	/** Return to the active session view. */
+	closeInput: () => void
 	/** Progress across a run of several files, null for a single file or when idle. */
 	batch: BatchProgress | null
 	/** The finished card's content, until dismissed. */
@@ -217,6 +227,7 @@ export function useTranscribeQueue(): TranscribeQueue {
 	const pinnedRef = useRef(false)
 	const [running, setRunning] = useState(false)
 	const runningRef = useRef(false)
+	const [pendingInput, setPendingInput] = useState(false)
 	const [isAborting, setIsAborting] = useState(false)
 	const abortCurrentRef = useRef(false)
 	const abortAllRef = useRef(false)
@@ -246,10 +257,14 @@ export function useTranscribeQueue(): TranscribeQueue {
 	const selectJob = useCallback(
 		(id: string) => {
 			pinnedRef.current = true
+			setPendingInput(false)
 			select(id)
 		},
 		[select],
 	)
+
+	const openInput = useCallback(() => setPendingInput(true), [])
+	const closeInput = useCallback(() => setPendingInput(false), [])
 
 	const serializeProjectOperation = useCallback(<T>(jobId: string, operation: () => Promise<T>): Promise<T> => {
 		const previous = projectOperationsRef.current.get(jobId) ?? Promise.resolve()
@@ -335,6 +350,7 @@ export function useTranscribeQueue(): TranscribeQueue {
 				name: job.name,
 				sourcePath: job.path,
 				projectsPath: current.projectsPath,
+				groupPath: job.groupPath,
 				moveSourceMedia: job.source === 'record' || job.source === 'url',
 				segments,
 				language: current.modelOptions.lang,
@@ -593,11 +609,13 @@ export function useTranscribeQueue(): TranscribeQueue {
 				name: file.projectName ?? autoProjectName(file.name, file.source ?? 'file'),
 				path: file.path,
 				source: file.source ?? 'file',
+				groupPath: file.groupPath,
 				status: 'queued',
 				progress: 0,
 				segments: [],
 			}))
 			commit([...jobsRef.current, ...created])
+			setPendingInput(false)
 			if (!selectedIdRef.current) select(created[0].id)
 			void runLoop()
 		},
@@ -744,6 +762,7 @@ export function useTranscribeQueue(): TranscribeQueue {
 	const reset = useCallback(() => {
 		if (runningRef.current) cancelAll()
 		pinnedRef.current = false
+		setPendingInput(false)
 		commit([])
 		select(null)
 	}, [cancelAll, commit, select])
@@ -773,6 +792,9 @@ export function useTranscribeQueue(): TranscribeQueue {
 		cancelCurrent,
 		cancelAll,
 		reset,
+		pendingInput,
+		openInput,
+		closeInput,
 		batch,
 		batchSummary,
 		dismissBatchSummary,

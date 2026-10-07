@@ -22,6 +22,8 @@ export const TRANSCRIPTS_FOLDER = 'Vibe'
 export const TRANSCRIPT_EXTENSION = '.vibe.json'
 /** Name of the record inside a project folder. */
 export const TRANSCRIPT_FILENAME = `transcript${TRANSCRIPT_EXTENSION}`
+/** Metadata file that marks a folder as a batch group rather than a project. */
+export const GROUP_FILENAME = 'group.vibe.json'
 
 export const TRANSCRIPT_VERSION = 1
 
@@ -74,6 +76,8 @@ export interface SaveTranscriptInput {
 	sourcePath: string
 	/** Custom root for project folders; null/undefined uses Documents/Vibe. */
 	projectsPath?: string | null
+	/** When set, project folder is created inside this group folder. */
+	groupPath?: string | null
 	/** Vibe-created media is removed only after its project copy and metadata are durable. */
 	moveSourceMedia?: boolean
 	segments: Segment[]
@@ -270,7 +274,7 @@ export async function saveTranscript(input: SaveTranscriptInput): Promise<SaveTr
 	let projectFolder: string | null = null
 	try {
 		const createdAt = input.createdAt ?? new Date()
-		const folder = await transcriptsFolder(input.projectsPath)
+		const folder = input.groupPath || (await transcriptsFolder(input.projectsPath))
 		projectFolder = await reserveProjectFolder(folder, input.name, createdAt)
 		const target = await pathApi.join(projectFolder, TRANSCRIPT_FILENAME)
 		const baseRecord: TranscriptRecord = {
@@ -319,25 +323,34 @@ export async function saveTranscript(input: SaveTranscriptInput): Promise<SaveTr
  * Every saved transcript, newest first: project folders plus legacy flat files. Reads folder and
  * file *names* only — never the records themselves.
  */
+async function collectTranscripts(folder: string, found: TranscriptEntry[]) {
+	const entries = await fs.readDir(folder)
+	for (const entry of entries) {
+		if (entry.isDirectory) {
+			const groupRecord = await pathApi.join(folder, entry.name, GROUP_FILENAME)
+			if (await fs.exists(groupRecord)) {
+				await collectTranscripts(await pathApi.join(folder, entry.name), found)
+				continue
+			}
+			const record = await pathApi.join(folder, entry.name, TRANSCRIPT_FILENAME)
+			if (!(await fs.exists(record))) continue
+			const { name, createdAt } = parseStamp(entry.name)
+			found.push({ path: record, name, createdAt })
+			continue
+		}
+		if (!entry.name.endsWith(TRANSCRIPT_EXTENSION) || entry.name === GROUP_FILENAME) continue
+		const stem = entry.name.slice(0, -TRANSCRIPT_EXTENSION.length)
+		const { name, createdAt } = parseStamp(stem)
+		found.push({ path: await pathApi.join(folder, entry.name), name, createdAt })
+	}
+}
+
 export async function listTranscripts(projectsPath?: string | null): Promise<TranscriptEntry[]> {
 	try {
 		const folder = projectsPath || (await pathApi.join(await pathApi.documentDir(), TRANSCRIPTS_FOLDER))
 		if (!(await fs.exists(folder))) return []
-		const entries = await fs.readDir(folder)
 		const found: TranscriptEntry[] = []
-		for (const entry of entries) {
-			if (entry.isDirectory) {
-				const record = await pathApi.join(folder, entry.name, TRANSCRIPT_FILENAME)
-				if (!(await fs.exists(record))) continue
-				const { name, createdAt } = parseStamp(entry.name)
-				found.push({ path: record, name, createdAt })
-				continue
-			}
-			if (!entry.name.endsWith(TRANSCRIPT_EXTENSION)) continue
-			const stem = entry.name.slice(0, -TRANSCRIPT_EXTENSION.length)
-			const { name, createdAt } = parseStamp(stem)
-			found.push({ path: await pathApi.join(folder, entry.name), name, createdAt })
-		}
+		await collectTranscripts(folder, found)
 		return found.sort((a, b) => b.createdAt.getTime() - a.createdAt.getTime() || b.path.localeCompare(a.path))
 	} catch (error) {
 		console.warn('failed to list transcripts:', error)
@@ -486,6 +499,26 @@ export async function deleteAllTranscripts(projectsPath?: string | null): Promis
 	for (const entry of entries) {
 		if (await deleteTranscript(entry.path)) deleted++
 	}
+
+	// Child project folders are gone; drop the empty group shells they lived in.
+	try {
+		const folder = projectsPath || (await pathApi.join(await pathApi.documentDir(), TRANSCRIPTS_FOLDER))
+		if (await fs.exists(folder)) {
+			for (const entry of await fs.readDir(folder)) {
+				if (!entry.isDirectory) continue
+				const groupRecord = await pathApi.join(folder, entry.name, GROUP_FILENAME)
+				if (!(await fs.exists(groupRecord))) continue
+				try {
+					await fs.remove(await pathApi.join(folder, entry.name), { recursive: true })
+				} catch (error) {
+					console.warn('failed to remove empty transcript group:', entry.name, error)
+				}
+			}
+		}
+	} catch (error) {
+		console.warn('failed to clean transcript groups after delete-all:', error)
+	}
+
 	return { deleted, failed: entries.length - deleted }
 }
 

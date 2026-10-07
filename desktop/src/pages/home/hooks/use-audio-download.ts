@@ -6,6 +6,7 @@ import { toast as notify } from 'sonner'
 import { m } from '~/paraglide/messages.js'
 import * as ytDlp from '~/lib/ytdlp'
 import { ErrorModalContext } from '~/providers/error-modal'
+import { createGroup } from '~/lib/transcript-groups'
 import { useFilesContext } from '~/providers/files-provider'
 import { usePreferenceProvider } from '~/providers/preference'
 import { useToastProvider } from '~/providers/toast'
@@ -23,7 +24,7 @@ export interface DownloadBatch {
 	url: string
 }
 
-export function useAudioDownload(transcribe: (paths: string[]) => Promise<void>) {
+export function useAudioDownload(transcribe: (paths: string[], titles?: string[], groupPath?: string) => Promise<void>) {
 	const preference = usePreferenceProvider()
 	const { setFiles } = useFilesContext()
 	const progressToast = useToastProvider()
@@ -168,17 +169,27 @@ export function useAudioDownload(transcribe: (paths: string[]) => Promise<void>)
 		cancelYtDlpRef.current = false
 		setDownloadingAudio(true)
 		const downloaded: string[] = []
+		const downloadedTitles: string[] = []
 		const failed: { url: string; error: unknown }[] = []
+		let groupPath: string | undefined
+		if (urls.length >= 2) {
+			try {
+				groupPath = await createGroup(`Batch-${urls.length}-links`, preference.projectsPath)
+			} catch (error) {
+				console.warn('failed to create batch group:', error)
+			}
+		}
 		try {
 			for (const [index, url] of urls.entries()) {
 				if (cancelYtDlpRef.current) break
 				setBatch({ index, total: urls.length, url })
 				setYtDlpProgress(0)
 				try {
-					const outPath = await ytDlp.downloadAudio(url)
+					const [outPath, title] = await Promise.all([ytDlp.downloadAudio(url), ytDlp.getMediaTitle(url)])
 					// A cancelled download resolves with a file that was never finished.
 					if (cancelYtDlpRef.current) break
 					downloaded.push(outPath)
+					downloadedTitles.push(title)
 				} catch (error) {
 					console.error(`download failed for ${url}`, error)
 					failed.push({ url, error })
@@ -193,9 +204,9 @@ export function useAudioDownload(transcribe: (paths: string[]) => Promise<void>)
 
 		if (downloaded.length) {
 			preference.setHomeTab('file')
-			setFiles(downloaded.map((path) => ({ name: 'audio.m4a', path })))
+			setFiles(downloaded.map((path, i) => ({ name: downloadedTitles[i] || 'audio.m4a', path })))
 			try {
-				await transcribe(downloaded)
+				await transcribe(downloaded, downloadedTitles, groupPath)
 			} catch (error) {
 				console.error(error)
 				setErrorModal?.({ log: String(error), open: true })
