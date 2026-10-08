@@ -1,3 +1,14 @@
+## What’s changed in this fork
+
+- Fixed speaker recognition and added recommended/local Nemotron GGUF model selection.
+- Added folder selection with optional subfolder transcription.
+- Improved Google Drive folder errors with clear download/sync instructions.
+- Includes transcription queueing, folder grouping, and smarter URL-based project names.
+
+**[Download the fixed Windows portable build](https://github.com/Alvinislazy/vibe/releases/tag/v3.2.2-fork.1)**
+
+Based on [thewh1teagle/Vibe](https://github.com/thewh1teagle/vibe). See [fork details and build notes](docs/FORK.md).
+
 <p align="center">
   <a target="blank" href="https://github.com/thewh1teagle/vibe">
     <img
