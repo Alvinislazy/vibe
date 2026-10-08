@@ -1,6 +1,6 @@
 ## What’s changed in this fork
 
-- Fixed speaker recognition and added recommended/local Nemotron GGUF model selection.
+- Fixed speaker recognition with upto 8 speakers and added recommended/local Nemotron GGUF model selection.
 - Added folder selection with optional subfolder transcription.
 - Improved Google Drive folder errors with clear download/sync instructions.
 - Includes transcription queueing, folder grouping, and smarter URL-based project names.
