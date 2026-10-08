@@ -44,6 +44,7 @@ export interface Session {
 	link: AudioDownload
 	collectingFolder: boolean
 	browse: () => Promise<void>
+	browseFolder: () => Promise<void>
 	startNew: () => void
 }
 
@@ -100,18 +101,32 @@ export function SessionProvider({ children }: { children: ReactNode }) {
 						patterns: mediaExtensions,
 						recursive: preference.advancedTranscribeOptions.includeSubFolders,
 					})
+					if (!expanded.length) {
+						toast.info('No audio or video files found', {
+							description: preference.advancedTranscribeOptions.includeSubFolders
+								? item
+								: 'Enable Include subfolders when your media is inside nested folders.',
+							position: 'bottom-center',
+						})
+						continue
+					}
 					let folderGroup = groupPath
 					if (!folderGroup && expanded.length >= 2) {
-						const folder = await pathToNamedPath(item)
+						const folderName =
+							item
+								.replace(/[\\/]+$/, '')
+								.split(/[\\/]/)
+								.pop() || 'Folder'
 						try {
-							folderGroup = await createGroup(folder.name, preference.projectsPath)
+							folderGroup = await createGroup(folderName.replace(':', ''), preference.projectsPath)
 						} catch (error) {
 							console.warn('failed to create folder group:', error)
 						}
 					}
 					for (const path of expanded) files.push({ ...(await pathToNamedPath(path)), source, groupPath: folderGroup })
-				} catch {
-					files.push({ ...(await pathToNamedPath(item)), source, groupPath })
+				} catch (error) {
+					console.error('Failed to scan folder:', item, error)
+					toast.error('Could not read folder', { description: `${item}: ${String(error)}`, position: 'bottom-center' })
 				} finally {
 					setCollectingFolder(false)
 				}
@@ -249,6 +264,13 @@ export function SessionProvider({ children }: { children: ReactNode }) {
 		await enqueuePaths(picked, 'file')
 	}, [enqueuePaths])
 
+	const browseFolder = useCallback(async () => {
+		const selected = await dialog.open({ multiple: false, directory: true })
+		if (!selected || Array.isArray(selected)) return
+		setPanel('none')
+		await enqueuePaths([selected], 'file')
+	}, [enqueuePaths])
+
 	const startNew = useCallback(() => {
 		if (queue.running) queue.openInput()
 		else queue.reset()
@@ -344,9 +366,10 @@ export function SessionProvider({ children }: { children: ReactNode }) {
 			link,
 			collectingFolder,
 			browse,
+			browseFolder,
 			startNew,
 		}),
-		[mode, queue, summaries, preference, dragging, panel, recording, recordElapsed, link, collectingFolder, browse, startNew],
+		[mode, queue, summaries, preference, dragging, panel, recording, recordElapsed, link, collectingFolder, browse, browseFolder, startNew],
 	)
 
 	return <SessionContext.Provider value={value}>{children}</SessionContext.Provider>

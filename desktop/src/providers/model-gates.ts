@@ -6,7 +6,7 @@ import { toast } from 'sonner'
 import { m } from '~/paraglide/messages.js'
 import * as config from '~/lib/config'
 import type { ModelIntegrity } from '~/lib/config'
-import { isModelFileUsable } from '~/lib/model'
+import { isGgufModel, isModelFileUsable, type DownloadModelResult } from '~/lib/model'
 import { usePreferenceProvider } from '~/providers/preference'
 import { useToastProvider } from '~/providers/toast'
 
@@ -34,7 +34,9 @@ export function useModelGates() {
 			progressToast.setOpen(true)
 			progressToast.setProgress(0)
 			try {
-				await invoke('download_model', { url: options.url, path: modelPath, integrity: options.integrity })
+				const result = await invoke<DownloadModelResult>('download_model', { url: options.url, path: modelPath, integrity: options.integrity })
+				if (result.status !== 'completed') return false
+				if (!(await isModelFileUsable(modelPath))) throw new Error('The downloaded model is missing or invalid. Please download it again.')
 				toast.success(m.downloadComplete())
 				return true
 			} finally {
@@ -46,18 +48,22 @@ export function useModelGates() {
 	)
 
 	/** True once the diarization model is on disk, asking to download it when it is not. */
-	const ensureDiarizeModel = useCallback(
-		() =>
-			ensureModel({
-				filename: config.diarizeModelFilename,
-				url: config.diarizeModelUrl,
-				integrity: config.diarizeModelIntegrity,
-				title: m.diarization(),
-				question: m.downloadDiarizeModel(),
-				downloading: m.downloadingDiarizeModel(),
-			}),
-		[ensureModel],
-	)
+	const ensureDiarizeModel = useCallback(async () => {
+		if (preference.diarizeModelPath) {
+			if (!isGgufModel(preference.diarizeModelPath) || !(await isModelFileUsable(preference.diarizeModelPath))) {
+				throw new Error('The selected speaker model is missing or invalid. Choose a Nemotron-3-Diarization GGUF in Settings > Tuning.')
+			}
+			return true
+		}
+		return ensureModel({
+			filename: config.diarizeModelFilename,
+			url: config.diarizeModelUrl,
+			integrity: config.diarizeModelIntegrity,
+			title: m.diarization(),
+			question: m.downloadDiarizeModel(),
+			downloading: m.downloadingDiarizeModel(),
+		})
+	}, [ensureModel, preference.diarizeModelPath])
 
 	const toggleDiarization = useCallback(
 		async (checked: boolean) => {

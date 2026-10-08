@@ -102,6 +102,9 @@ export interface Preference {
 	advancedTranscribeOptions: AdvancedTranscribeOptions
 	setAdvancedTranscribeOptions: ModifyState<AdvancedTranscribeOptions>
 
+	/** Null uses the recommended model; otherwise a local Nemotron-3-Diarization GGUF. */
+	diarizeModelPath: string | null
+	setDiarizeModelPath: ModifyState<string | null>
 	diarizeEnabled: boolean
 	setDiarizeEnabled: ModifyState<boolean>
 	stableTimestampsEnabled: boolean
@@ -251,6 +254,7 @@ export function PreferenceProvider({ children }: { children: ReactNode }) {
 	})
 
 	const [recentLanguages, setRecentLanguages] = usePersisted<{ code: string; ts: number }[]>(CONFIG_KEYS.recentLanguages, [])
+	const [diarizeModelPath, setDiarizeModelPath] = usePersisted<string | null>(CONFIG_KEYS.diarizeModelPath, null)
 	const [diarizeEnabled, setDiarizeEnabled] = usePersisted<boolean>(CONFIG_KEYS.diarizeEnabled, false)
 	const [stableTimestampsEnabled, setStableTimestampsEnabled] = usePersisted<boolean>(CONFIG_KEYS.stableTimestampsEnabled, false)
 	const [storedExportOptions, setStoredExportOptions] = usePersisted<Partial<ExportOptions>>(CONFIG_KEYS.exportOptions, DEFAULT_EXPORT_OPTIONS)
@@ -444,6 +448,8 @@ export function PreferenceProvider({ children }: { children: ReactNode }) {
 		setAdvancedTranscribeOptions,
 		recentLanguages,
 		setRecentLanguages,
+		diarizeModelPath,
+		setDiarizeModelPath,
 		diarizeEnabled,
 		setDiarizeEnabled,
 		stableTimestampsEnabled,

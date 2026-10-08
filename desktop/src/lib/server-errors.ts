@@ -7,6 +7,7 @@ export const serverErrorCodes = {
 	GPU_OUT_OF_MEMORY: 'gpu_out_of_memory',
 	/** System memory ran out, so the CPU would fail the same way. */
 	OUT_OF_MEMORY: 'out_of_memory',
+	DIARIZATION_FAILED: 'diarization_failed',
 	INTERNAL_ERROR: 'internal_error',
 } as const
 
@@ -26,7 +27,7 @@ export function isUserError(code: string): code is UserErrorCode {
  */
 const SERVER_DIED_PREFIX = 'vibe-server process died'
 
-export type FatalRunError = 'no_model' | 'engine_died'
+export type FatalRunError = 'no_model' | 'engine_died' | 'diarization_failed'
 
 /** What Rust prints before aborting when an allocation fails; the process dies without an error code. */
 const ALLOCATION_FAILED = /memory allocation of \d+ bytes failed/
@@ -48,6 +49,7 @@ export function isGpuOutOfMemory(code: string | undefined, message: string): boo
  * stop: 16 installs looping over their queue produced half of all failure events in a 30-day window.
  */
 export function fatalRunError(code: string | undefined, message: string): FatalRunError | null {
+	if (code === serverErrorCodes.DIARIZATION_FAILED) return 'diarization_failed'
 	if (code === serverErrorCodes.NO_MODEL || message.includes('no model loaded')) return 'no_model'
 	if (message.includes(SERVER_DIED_PREFIX)) return 'engine_died'
 	return null

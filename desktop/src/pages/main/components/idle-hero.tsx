@@ -319,7 +319,7 @@ function LinkPanel() {
 }
 
 export default function IdleHero() {
-	const { dragging, browse, collectingFolder, panel, setPanel, link, recording, queue } = useSession()
+	const { dragging, browse, browseFolder, collectingFolder, panel, setPanel, link, recording, queue, preference } = useSession()
 
 	// "New transcription" mid-run keeps the queue alive in the background and drops the user onto
 	// this idle hero; make that work visible instead of silent until they re-open the session.
@@ -407,6 +407,24 @@ export default function IdleHero() {
 				</AnimatePresence>
 			</div>
 
+			{panel === 'none' && (
+				<div className="flex flex-col items-center gap-2">
+					<Button variant="ghost" size="sm" disabled={collectingFolder} onClick={() => void browseFolder()}>
+						<FolderOpen className="mr-2 h-4 w-4" />
+						{m.selectFolder()}
+					</Button>
+					<label className="flex items-center gap-2 text-xs text-muted-foreground">
+						<input
+							type="checkbox"
+							checked={preference.advancedTranscribeOptions.includeSubFolders}
+							onChange={(event) =>
+								preference.setAdvancedTranscribeOptions({ ...preference.advancedTranscribeOptions, includeSubFolders: event.target.checked })
+							}
+						/>
+						{m.includeSubFolders()}
+					</label>
+				</div>
+			)}
 			<QuietRow />
 		</div>
 	)

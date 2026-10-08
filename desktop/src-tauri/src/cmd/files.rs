@@ -4,33 +4,57 @@ use std::path::{Path, PathBuf};
 use tauri::{AppHandle, Manager};
 
 #[tauri::command]
-pub async fn glob_files(folder: String, patterns: Vec<String>, recursive: bool) -> Vec<String> {
+pub async fn glob_files(folder: String, patterns: Vec<String>, recursive: bool) -> Result<Vec<String>> {
+    tokio::task::spawn_blocking(move || collect_media_files(Path::new(&folder), &patterns, recursive))
+        .await
+        .map_err(|error| eyre::eyre!("Folder scan stopped: {error}"))?
+}
+
+fn collect_media_files(folder: &Path, patterns: &[String], recursive: bool) -> Result<Vec<String>> {
+    let mut pending = vec![folder.to_path_buf()];
     let mut files = Vec::new();
-
-    let search_pattern = if recursive {
-        format!("{}/**/*", folder)
-    } else {
-        format!("{}/*", folder)
-    };
-
-    match glob::glob(&search_pattern) {
-        Ok(paths) => {
-            for entry in paths.filter_map(Result::ok) {
-                if entry.is_file() && has_matching_extension(&entry, &patterns) {
-                    if let Ok(path_str) = entry.into_os_string().into_string() {
-                        files.push(path_str);
-                    }
+    let mut visited = std::collections::HashSet::new();
+    while let Some(directory) = pending.pop() {
+        // Canonical targets also guard against Windows junction cycles and repeated aliases.
+        if let Ok(target) = std::fs::canonicalize(&directory) {
+            if !visited.insert(target) {
+                continue;
+            }
+        }
+        let entries = match std::fs::read_dir(&directory) {
+            Ok(entries) => entries,
+            Err(error) if directory == folder => {
+                return Err(eyre::eyre!("Could not read folder {}: {error}", folder.display()));
+            }
+            Err(error) => {
+                // A drive can contain protected system folders; they must not abort the batch.
+                tracing::warn!("Skipping unreadable folder {}: {error}", directory.display());
+                continue;
+            }
+        };
+        for entry in entries {
+            let entry = match entry {
+                Ok(entry) => entry,
+                Err(error) => {
+                    tracing::warn!("Skipping unreadable entry in {}: {error}", directory.display());
+                    continue;
+                }
+            };
+            let Ok(file_type) = entry.file_type() else { continue };
+            let path = entry.path();
+            // Do not follow symlinks/junctions: a drive scan may otherwise loop forever.
+            if file_type.is_dir() && recursive && !file_type.is_symlink() {
+                pending.push(path);
+            } else if file_type.is_file() && has_matching_extension(&path, patterns) {
+                if let Some(path) = path.to_str() {
+                    files.push(path.to_string());
                 }
             }
         }
-        Err(e) => {
-            eprintln!("Failed to read pattern {}: {}", search_pattern, e);
-        }
     }
-
-    files
+    files.sort();
+    Ok(files)
 }
-
 /// Recorders and phones write `.MP3` and `.MOV`, so the extension is matched without regard to
 /// case — otherwise those files vanish from every folder scan. Patterns may carry a leading dot.
 fn has_matching_extension(path: &Path, patterns: &[String]) -> bool {
@@ -192,7 +216,7 @@ fn macos_open_panel(extensions: &[String]) -> Option<Vec<String>> {
 
 #[cfg(test)]
 mod tests {
-    use super::has_matching_extension;
+    use super::{collect_media_files, has_matching_extension};
     use std::path::Path;
 
     #[test]
@@ -208,5 +232,31 @@ mod tests {
         let patterns = vec!["mp3".to_string()];
         assert!(!has_matching_extension(Path::new("/tmp/notesmp3"), &patterns));
         assert!(!has_matching_extension(Path::new("/tmp/notes.pdf"), &patterns));
+    }
+    #[test]
+    fn scans_literal_folder_names_and_nested_media() {
+        let folder = std::env::temp_dir().join(format!(
+            "vibe-scan-[{}]-{}",
+            std::process::id(),
+            crate::ffmpeg::random_string(8)
+        ));
+        std::fs::create_dir_all(folder.join("nested")).unwrap();
+        std::fs::write(folder.join("recording.MP3"), b"").unwrap();
+        std::fs::write(folder.join("notes.txt"), b"").unwrap();
+        std::fs::write(folder.join("nested").join("video.MOV"), b"").unwrap();
+        let patterns = vec!["mp3".to_string(), "mov".to_string()];
+        let shallow = collect_media_files(&folder, &patterns, false).unwrap();
+        let nested = collect_media_files(&folder, &patterns, true).unwrap();
+        std::fs::remove_dir_all(&folder).unwrap();
+        assert_eq!(shallow, vec![folder.join("recording.MP3").to_string_lossy().to_string()]);
+        assert_eq!(nested.len(), 2);
+        assert!(nested.contains(&folder.join("nested").join("video.MOV").to_string_lossy().to_string()));
+    }
+
+    #[test]
+    fn reports_missing_folder_instead_of_returning_an_empty_batch() {
+        let folder = std::env::temp_dir().join(format!("vibe-missing-{}", crate::ffmpeg::random_string(8)));
+        let error = collect_media_files(&folder, &["mp3".to_string()], true).unwrap_err();
+        assert!(error.to_string().contains("Could not read folder"));
     }
 }

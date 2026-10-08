@@ -18,7 +18,7 @@ export type ModelExtension = (typeof MODEL_EXTENSIONS)[number]
 
 const MODEL_EXTENSION_PATTERN = new RegExp(`\\.(${MODEL_EXTENSIONS.join('|')})$`, 'i')
 
-type DownloadModelResult = { status: 'completed'; path: string } | { status: 'cancelled' }
+export type DownloadModelResult = { status: 'completed'; path: string } | { status: 'cancelled' }
 
 export function getModelExtension(filename: string): ModelExtension | null {
 	const extension = filename.match(MODEL_EXTENSION_PATTERN)?.[1]?.toLowerCase()
@@ -100,7 +100,10 @@ export async function cleanupPartialDownloads(folder?: string): Promise<string[]
 const AUXILIARY_MODEL_FILENAMES = [vadModelFilename, diarizeModelFilename, ...legacyDiarizeModelFilenames, embeddingModelFilename, segmentModelFilename]
 
 export function isAuxiliaryModelFile(filename: string) {
-	return AUXILIARY_MODEL_FILENAMES.some((auxiliary) => auxiliary.toLowerCase() === filename.toLowerCase())
+	return (
+		/(?:nemotron.*diari|diari.*nemotron)/i.test(filename) ||
+		AUXILIARY_MODEL_FILENAMES.some((auxiliary) => auxiliary.toLowerCase() === filename.toLowerCase())
+	)
 }
 
 /** Every transcription model in the folder, with truncated or corrupt ones flagged rather than hidden. */

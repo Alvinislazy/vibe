@@ -160,7 +160,7 @@ async function buildSharedOptions(preference: Preference) {
 	const needsFolder = preference.diarizeEnabled || preference.stableTimestampsEnabled || requiresVad
 	const modelsFolder = needsFolder ? await invoke<string>('get_models_folder') : null
 	return {
-		...(preference.diarizeEnabled ? { diarize_model: `${modelsFolder}/${config.diarizeModelFilename}` } : {}),
+		...(preference.diarizeEnabled ? { diarize_model: preference.diarizeModelPath ?? `${modelsFolder}/${config.diarizeModelFilename}` } : {}),
 		...(preference.stableTimestampsEnabled || requiresVad ? { vad_model: `${modelsFolder}/${config.vadModelFilename}` } : {}),
 		...(preference.stableTimestampsEnabled ? { stable_timestamps: true } : {}),
 	}
@@ -501,9 +501,16 @@ export function useTranscribeQueue(): TranscribeQueue {
 							// A dead sidecar or an unloaded model fails every following file the same way.
 							const fatal = fatalRunError(code, message)
 							if (fatal) {
-								toast.error(fatal === 'no_model' ? m.noModelLoadedBatchStopped() : m.transcribeEngineStoppedBatchStopped(), {
-									position: 'bottom-center',
-								})
+								toast.error(
+									fatal === 'diarization_failed'
+										? message
+										: fatal === 'no_model'
+											? m.noModelLoadedBatchStopped()
+											: m.transcribeEngineStoppedBatchStopped(),
+									{
+										position: 'bottom-center',
+									},
+								)
 								failPending(message)
 								break
 							}

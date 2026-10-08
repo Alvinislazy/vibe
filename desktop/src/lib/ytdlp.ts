@@ -76,3 +76,16 @@ export async function getMediaTitle(url: string): Promise<string> {
 export function parseMediaLinks(input: string): string[] {
 	return [...new Set(input.split(/\s+/).filter(Boolean))]
 }
+
+/** Drive folders need account-aware enumeration; the single-media downloader cannot fetch them. */
+export function isGoogleDriveFolderUrl(input: string): boolean {
+	try {
+		const url = new URL(input)
+		return url.hostname.toLowerCase() === 'drive.google.com' && /^\/drive\/(?:u\/\d+\/)?folders(?:\/|$)/i.test(url.pathname)
+	} catch {
+		return false
+	}
+}
+
+export const GOOGLE_DRIVE_FOLDER_HELP =
+	'Google Drive folder links cannot be downloaded directly. Download and unzip the folder, or sync it with Google Drive for desktop, then use Select folder. Enable Include subfolders to transcribe nested folders. Individual shared audio or video file links can be pasted here.'

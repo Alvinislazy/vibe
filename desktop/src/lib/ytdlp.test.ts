@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { isNewerVersion, parseMediaLinks } from './ytdlp'
+import { isGoogleDriveFolderUrl, isNewerVersion, parseMediaLinks } from './ytdlp'
 
 describe('isNewerVersion', () => {
 	it('compares calendar versions by number, not as strings', () => {
@@ -39,5 +39,18 @@ describe('parseMediaLinks', () => {
 			'https://a.example/3',
 		])
 		expect(parseMediaLinks('   ')).toEqual([])
+	})
+})
+
+describe('isGoogleDriveFolderUrl', () => {
+	it('recognizes shared and account-specific Drive folder links', () => {
+		expect(isGoogleDriveFolderUrl('https://drive.google.com/drive/folders/abc?usp=sharing')).toBe(true)
+		expect(isGoogleDriveFolderUrl('https://drive.google.com/drive/u/0/folders/abc')).toBe(true)
+	})
+	it('allows individual Drive files and does not match lookalike hosts', () => {
+		expect(isGoogleDriveFolderUrl('https://drive.google.com/file/d/abc/view')).toBe(false)
+		expect(isGoogleDriveFolderUrl('https://drive.google.com/uc?id=abc&export=download')).toBe(false)
+		expect(isGoogleDriveFolderUrl('https://drive.google.com.example/drive/folders/abc')).toBe(false)
+		expect(isGoogleDriveFolderUrl('not a url')).toBe(false)
 	})
 })

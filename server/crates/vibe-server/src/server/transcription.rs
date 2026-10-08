@@ -1,8 +1,8 @@
 use std::collections::HashMap;
 
-use axum::http::{header, StatusCode};
-use axum::response::{IntoResponse, Response};
 use axum::Json;
+use axum::http::{StatusCode, header};
+use axum::response::{IntoResponse, Response};
 use whisper_rs::TranscribeOptions;
 
 use crate::audio;
@@ -11,7 +11,7 @@ use crate::server::diarization;
 use crate::server::form::FormValues;
 use crate::server::stream::stream_transcription;
 use crate::server::unload_timeout::ModelLease;
-use crate::server::{error, format, TextResponse};
+use crate::server::{TextResponse, error, format};
 
 pub(super) struct TranscriptionRequest {
     pub file: Vec<u8>,
@@ -47,9 +47,13 @@ pub(super) async fn transcribe(
         )
     })?;
 
-    let diar_segments = diarize_model
-        .as_deref()
-        .map_or_else(Vec::new, |model_path| diarization::diarize(model_path, &samples));
+    let diar_segments = match diarize_model.as_deref() {
+        Some(model_path) => diarization::diarize(model_path, &samples).map_err(|err| {
+            tracing::error!(model = model_path, "speaker recognition failed: {err:#}");
+            error(StatusCode::INTERNAL_SERVER_ERROR, "diarization_failed", &format!("{err:#}"))
+        })?,
+        None => Vec::new(),
+    };
 
     if stable_timestamps && vad_model_path.is_none() {
         return Err(error(

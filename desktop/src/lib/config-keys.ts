@@ -33,6 +33,7 @@ export const CONFIG_KEYS = {
 	advancedOptions: 'transcription.advancedOptions',
 	recentLanguages: 'transcription.recentLanguages',
 	diarizeEnabled: 'transcription.recognizeSpeakers',
+	diarizeModelPath: 'transcription.diarizeModelPath',
 	stableTimestampsEnabled: 'transcription.stableTimestamps',
 	soundOnFinish: 'transcription.soundOnFinish',
 	focusOnFinish: 'transcription.focusOnFinish',

@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { isGpuOutOfMemory, serverErrorCodes } from './server-errors'
+import { fatalRunError, isGpuOutOfMemory, serverErrorCodes } from './server-errors'
 
 describe('isGpuOutOfMemory', () => {
 	it('trusts the code server reports on a failed GPU allocation', () => {
@@ -19,5 +19,14 @@ describe('isGpuOutOfMemory', () => {
 	it('does not read memory into an unrelated death or stream failure', () => {
 		expect(isGpuOutOfMemory(serverErrorCodes.INTERNAL_ERROR, 'vibe-server process died during transcription (killed by signal 9)')).toBe(false)
 		expect(isGpuOutOfMemory(serverErrorCodes.INTERNAL_ERROR, 'failed to read server event line: invalid json')).toBe(false)
+	})
+})
+
+describe('fatalRunError', () => {
+	it('stops the batch when the shared speaker model cannot be loaded', () => {
+		expect(fatalRunError(serverErrorCodes.DIARIZATION_FAILED, 'unsupported model architecture')).toBe('diarization_failed')
+	})
+	it('allows the next file after a file-specific audio failure', () => {
+		expect(fatalRunError(serverErrorCodes.INVALID_AUDIO, 'could not decode audio')).toBeNull()
 	})
 })

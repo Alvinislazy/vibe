@@ -162,10 +162,18 @@ export function useAudioDownload(transcribe: (paths: string[], titles?: string[]
 	 * The box and the list are emptied as soon as the run starts so the next links can go in.
 	 */
 	async function downloadAudio() {
-		const urls = pendingLinks
+		const folderUrls = pendingLinks.filter(ytDlp.isGoogleDriveFolderUrl)
+		const urls = pendingLinks.filter((url) => !ytDlp.isGoogleDriveFolderUrl(url))
+		if (folderUrls.length) {
+			notify.error('Google Drive folder needs a local copy', {
+				description: ytDlp.GOOGLE_DRIVE_FOLDER_HELP,
+				position: 'bottom-center',
+				duration: 15000,
+			})
+		}
 		if (!urls.length) return
 		setAudioUrl('')
-		setQueuedLinks([])
+		setQueuedLinks(folderUrls)
 		cancelYtDlpRef.current = false
 		setDownloadingAudio(true)
 		const downloaded: string[] = []
